@@ -7,7 +7,14 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from cascadence.cascade import avalanche_ensemble, branching_ratio, run_avalanche
+from cascadence.cascade import (
+    avalanche_ensemble,
+    branching_ratio,
+    critical_shift,
+    expected_branching_ratio,
+    run_avalanche,
+    shift_for_ratio,
+)
 from cascadence.kernel import RaceKernel
 from cascadence.network import lattice_network
 
@@ -182,3 +189,90 @@ def test_explicit_seed_is_honoured():
     )
     assert avalanche.seed_edge == edge
     assert avalanche.size == 1
+
+
+# ---------------------------------------------------------------------------
+# the closed-form branching ratio and the bisections built on it
+# ---------------------------------------------------------------------------
+
+
+def _centred_kernel(net, offset: float = 0.0) -> RaceKernel:
+    baseline = net.solve()
+    finite = baseline.transit_time[baseline.perfused]
+    return RaceKernel.from_polymerization(
+        tau_ref=float(np.median(finite)), exponent_n=20.0, conc_log_sd=0.1
+    ).shifted(offset)
+
+
+def test_closed_form_matches_monte_carlo():
+    """The exact estimator must agree with simulating whole cascades."""
+    net = _bed()
+    kernel = _centred_kernel(net, 7.0)
+    exact = expected_branching_ratio(net, kernel)
+    sampled = branching_ratio(net, kernel, np.random.default_rng(1), n_realizations=600)
+    assert abs(exact - sampled.from_offspring) < 3.0 * sampled.offspring_sem
+
+
+def test_closed_form_is_deterministic_for_a_fixed_seed_set():
+    """Regression: a re-drawn seed subsample makes each call a different function.
+
+    ``expected_branching_ratio`` consumes ``rng`` when it subsamples, so calling
+    it repeatedly with one generator evaluates a slightly different function
+    each time. Every procedure that compares calls -- a sweep, or the bisection
+    in ``critical_shift`` -- must therefore pin the seed set once and pass it
+    in. Both behaviours are asserted here so neither can drift.
+    """
+    net = _bed()
+    kernel = _centred_kernel(net, 6.0)
+    baseline = net.solve()
+    seeds = np.flatnonzero(baseline.perfused)[:120]
+
+    fixed = [expected_branching_ratio(net, kernel, seeds=seeds) for _ in range(3)]
+    assert fixed[0] == pytest.approx(fixed[1]) == pytest.approx(fixed[2])
+
+    shared = np.random.default_rng(0)
+    redrawn = [
+        expected_branching_ratio(net, kernel, n_seeds=120, rng=shared) for _ in range(3)
+    ]
+    assert len({round(value, 12) for value in redrawn}) > 1
+
+    with pytest.raises(ValueError, match="rng is required"):
+        expected_branching_ratio(net, kernel, n_seeds=10)
+
+
+def test_critical_shift_lands_on_unit_branching_ratio():
+    """End-to-end check: verify the located shift against the full seed set."""
+    net = _bed()
+    kernel = _centred_kernel(net)
+    shift = critical_shift(net, kernel, tol=0.01)
+    assert expected_branching_ratio(net, kernel.shifted(shift)) == pytest.approx(
+        1.0, abs=0.02
+    )
+
+
+@pytest.mark.parametrize("target", [0.5, 1.5, 2.0])
+def test_shift_for_ratio_hits_its_target(target):
+    net = _bed()
+    kernel = _centred_kernel(net)
+    shift = shift_for_ratio(net, kernel, target, tol=0.01)
+    assert expected_branching_ratio(net, kernel.shifted(shift)) == pytest.approx(
+        target, rel=0.03
+    )
+
+
+def test_bisection_rejects_a_bracket_that_does_not_straddle():
+    net = _bed()
+    kernel = _centred_kernel(net)
+    with pytest.raises(ValueError, match="does not straddle"):
+        critical_shift(net, kernel, bracket=(12.0, 20.0))
+    with pytest.raises(ValueError, match="target branching ratio must be positive"):
+        shift_for_ratio(net, kernel, 0.0)
+
+
+def test_seeds_must_be_perfused():
+    net = _bed()
+    baseline = net.solve()
+    dead = np.flatnonzero(~baseline.perfused)
+    if dead.size:
+        with pytest.raises(ValueError, match="every seed must be perfused"):
+            expected_branching_ratio(net, _centred_kernel(net), seeds=dead[:1])

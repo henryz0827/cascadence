@@ -57,7 +57,10 @@ __all__ = [
     "BranchingRatio",
     "avalanche_ensemble",
     "branching_ratio",
+    "critical_shift",
+    "expected_branching_ratio",
     "run_avalanche",
+    "shift_for_ratio",
     "sweep_control",
 ]
 
@@ -300,6 +303,183 @@ def branching_ratio(
         censored_fraction=float(censored.mean()),
         n_realizations=len(ensemble),
     )
+
+
+def expected_branching_ratio(
+    network: FlowNetwork,
+    kernel: BlockingKernel,
+    *,
+    seeds: np.ndarray | None = None,
+    n_seeds: int | None = None,
+    rng: np.random.Generator | None = None,
+    baseline: FlowState | None = None,
+    baseline_p: np.ndarray | None = None,
+) -> float:
+    """Exact expected first-generation offspring, without Monte Carlo.
+
+    The branching ratio is the mean number of segments a single block sets off.
+    Given the seed, that is a sum of independent Bernoulli trials, so its
+    expectation is available in closed form:
+
+        E[offspring | seed e] = sum over candidates of p_cond
+
+    which needs one pressure solve per seed and carries no sampling noise at
+    all. :func:`branching_ratio` estimates the same quantity by simulating
+    whole cascades; this is the estimator to use when only ``R`` is wanted --
+    it is both cheaper and exact, which is what makes bisecting for ``R = 1``
+    in :func:`critical_shift` practical.
+
+    Averaging over every perfused seed (the default) makes the result a
+    deterministic function of the network and kernel. Pass ``n_seeds`` to
+    subsample on large networks, in which case ``rng`` is required.
+
+    When comparing across control settings -- a sweep, or the bisection in
+    :func:`critical_shift` -- draw the subsample **once** and pass it as
+    ``seeds``. Re-drawing per evaluation leaves each call unbiased but makes
+    the sequence of calls a different function each time, which silently
+    defeats any procedure that assumes it is comparing like with like.
+    """
+    if baseline is None:
+        baseline = network.solve()
+    if baseline_p is None:
+        baseline_p = kernel.p_block(baseline.transit_time)
+
+    perfused = np.flatnonzero(baseline.perfused)
+    if perfused.size == 0:
+        raise ValueError("baseline network has no perfused edges")
+
+    if seeds is not None:
+        seeds = np.atleast_1d(np.asarray(seeds, dtype=np.int64))
+        if not baseline.perfused[seeds].all():
+            raise ValueError("every seed must be perfused at baseline")
+    elif n_seeds is not None and n_seeds < perfused.size:
+        if rng is None:
+            raise ValueError("rng is required when subsampling seeds")
+        seeds = rng.choice(perfused, size=n_seeds, replace=False)
+    else:
+        seeds = perfused
+
+    blocked = np.zeros(network.n_edges, dtype=bool)
+    total = 0.0
+    for seed in seeds:
+        blocked[:] = False
+        blocked[seed] = True
+        state = network.solve(blocked)
+        candidates = state.perfused & ~blocked
+        if not candidates.any():
+            continue
+        p_now = kernel.p_block(state.transit_time[candidates])
+        p_was = baseline_p[candidates]
+        total += float(
+            np.clip((p_now - p_was) / np.clip(1.0 - p_was, 1e-12, None), 0.0, 1.0).sum()
+        )
+    return total / len(seeds)
+
+
+def shift_for_ratio(
+    network: FlowNetwork,
+    kernel,
+    target: float,
+    *,
+    bracket: tuple[float, float] = (0.0, 20.0),
+    tol: float = 0.02,
+    max_iter: int = 40,
+    n_seeds: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """Locate the control shift at which the branching ratio equals ``target``.
+
+    Comparing avalanche statistics across system sizes requires matching on the
+    branching ratio, not on the raw control shift: the same shift produces
+    different ratios on different lattices, so a shift-matched comparison
+    silently compares different physical states and any trend in ``L`` it shows
+    is an artefact of that mismatch.
+
+    See :func:`critical_shift` for the ``target = 1`` case and for the details
+    of the bisection.
+    """
+    if target <= 0.0:
+        raise ValueError("target branching ratio must be positive")
+    return _bisect_ratio(
+        network, kernel, target, bracket, tol, max_iter, n_seeds, rng
+    )
+
+
+def critical_shift(
+    network: FlowNetwork,
+    kernel,
+    *,
+    bracket: tuple[float, float] = (0.0, 20.0),
+    tol: float = 0.02,
+    max_iter: int = 40,
+    n_seeds: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """Locate the control shift at which the branching ratio crosses 1.
+
+    Bisects :func:`expected_branching_ratio`, which is monotonically decreasing
+    in the shift (raising the median delay time can only make propagation
+    harder). The seed set is drawn **once** up front and held fixed across
+    every evaluation, so the bisection descends a single deterministic
+    function; re-drawing it per step would make each step probe a slightly
+    different function and the bracket would collapse onto the wrong point.
+
+    Raises ``ValueError`` if the bracket does not straddle ``R = 1``; widen it
+    rather than assuming a crossing exists.
+    """
+    return _bisect_ratio(network, kernel, 1.0, bracket, tol, max_iter, n_seeds, rng)
+
+
+def _bisect_ratio(
+    network: FlowNetwork,
+    kernel,
+    target: float,
+    bracket: tuple[float, float],
+    tol: float,
+    max_iter: int,
+    n_seeds: int | None,
+    rng: np.random.Generator | None,
+) -> float:
+    if not hasattr(kernel, "shifted"):
+        raise TypeError("kernel must implement .shifted(delta)")
+
+    baseline = network.solve()
+    perfused = np.flatnonzero(baseline.perfused)
+    if n_seeds is not None and n_seeds < perfused.size:
+        if rng is None:
+            raise ValueError("rng is required when subsampling seeds")
+        seeds = rng.choice(perfused, size=n_seeds, replace=False)
+    else:
+        seeds = perfused
+
+    lo, hi = float(bracket[0]), float(bracket[1])
+
+    def ratio(shift: float) -> float:
+        shifted = kernel.shifted(shift)
+        return expected_branching_ratio(
+            network,
+            shifted,
+            seeds=seeds,
+            baseline=baseline,
+            baseline_p=shifted.p_block(baseline.transit_time),
+        )
+
+    r_lo, r_hi = ratio(lo), ratio(hi)
+    if r_lo < target or r_hi > target:
+        raise ValueError(
+            f"bracket [{lo}, {hi}] does not straddle R={target} "
+            f"(R={r_lo:.3f} and R={r_hi:.3f}); widen it"
+        )
+
+    for _ in range(max_iter):
+        if hi - lo < tol:
+            break
+        mid = 0.5 * (lo + hi)
+        if ratio(mid) > target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 def sweep_control(
