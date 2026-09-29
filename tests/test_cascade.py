@@ -290,6 +290,11 @@ def test_branching_ratio_collapses_after_the_first_generation():
     profile = generation_profile(ensemble)
 
     assert profile["ratio"].size >= 4
+    # The three arrays describe the same generations and must stay aligned.
+    assert profile["generation"].shape == profile["ratio"].shape
+    assert profile["generation"].shape == profile["total"].shape
+    assert profile["generation"][0] == 1
+
     first = profile["ratio"][0]
     assert first == pytest.approx(1.0, abs=0.12), profile["ratio"]
     # The drop after the first generation is the finding, not noise.

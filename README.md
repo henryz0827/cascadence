@@ -11,13 +11,67 @@ too. The biological instance lives in `examples/`.
 
 ---
 
-## Status
+## The main result so far is negative, and it is about the framing
 
-This repository is at the stage where the **tooling is validated and the first
-substantive question is open**. That distinction is the point of the sections
-below, and it is kept deliberately sharp: an exponent quoted from unvalidated
-tooling is not a measurement, and a plateau that is not there cannot be
-asserted into existence.
+Cascades on a flow network with global pressure redistribution are **not a
+branching process with a single rate**, and the model has **no critical point**.
+Both are measured, not argued, and together they rule out the scale-free
+avalanche statistics that motivated the project.
+
+**The branching ratio collapses after the first generation.** Resolved
+generation by generation at the setting where `R_1 = 1`, the second generation
+branches at roughly *half* that rate and the rest plateau near 0.5:
+
+| L | R₁ | R₂ | R₃ | R₄ | R₂/R₁ |
+|---:|---:|---:|---:|---:|---:|
+| 12 | 1.006 | 0.495 | 0.539 | 0.482 | 0.49 |
+| 16 | 1.026 | 0.521 | 0.574 | 0.623 | 0.51 |
+| 24 | 0.967 | 0.466 | 0.445 | 0.441 | 0.48 |
+| 32 | 1.032 | 0.540 | 0.539 | 0.625 | 0.52 |
+
+`R_2/R_1` is flat across a factor of nearly three in linear size, so this is
+structural, not a finite-size artefact. The mechanism is depletion: a
+generation's blocks cluster around the ones that produced them, so the next
+generation re-attacks a neighbourhood already stripped of its susceptible
+segments. The cascade is not a tree.
+
+**There is no critical point.** Comparing system sizes at *matched branching
+ratio*, the mean avalanche size does not grow with the linear size — it
+declines:
+
+| matched R | log-log slope of ⟨S⟩ vs L |
+|---:|---:|
+| 1.0 | −0.086 |
+| 1.5 | −0.443 |
+| 2.0 | −0.995 |
+
+The fitted cutoff behaves the same way, and the largest avalanche as a fraction
+of the network falls from ~0.2 at L=12 to ~0.01 at L=32. The system-spanning
+avalanches that show up on small lattices are the small box being easy to span,
+not a diverging correlation length.
+
+**Three earlier observations follow from the first result**, and are no longer
+separate puzzles:
+
+- Avalanches stay small at `R_1 = 1` because that is not the critical
+  condition. Driving later generations to 1 would need `R_1` near 2, and by
+  then avalanches span the system outright.
+- `⟨S⟩ = 1/(1-R)` is not merely imprecise here, it is inapplicable: it assumes
+  one rate for every generation. This is why the two estimators in
+  `cascade.branching_ratio` disagree approaching criticality.
+- The system passes from self-limiting to system-spanning with no scale-free
+  regime in between.
+
+### A mechanism that was checked and did not hold
+
+The natural explanation for self-limitation — that under a fixed pressure drop
+blocking diverts flow and *speeds up* the survivors — is wrong. Across 1 to 60
+blocked segments, **62% of surviving segments slow down**, and the fraction is
+independent of how many are blocked. Recorded here so it is not proposed again.
+
+---
+
+## Status
 
 ### Established
 
@@ -29,12 +83,11 @@ of the broken set at each level (`tests/test_fiberbundle.py`).
 **The exponent estimator recovers known analytic values.** On fiber-bundle data
 the fitted exponent converges to 5/2 over the full loading history, and to 3/2
 when the sampling window is tightened onto the critical point — both are
-analytically known, and both come out (panels A and B of the validation figure).
+analytically known, and both come out.
 
 **The flow solver is correct.** Checked against series and parallel conductances,
 current conservation on a lattice, and the disconnection case, where cutting the
-inlet face gives exactly zero flow everywhere rather than a singular solve
-(`tests/test_network.py`).
+inlet face gives exactly zero flow everywhere rather than a singular solve.
 
 **The cascade measures response, not baseline.** With a kernel whose blocking
 probability does not depend on transit time, no segment ever blocks beyond the
@@ -43,24 +96,25 @@ than the standing hazard (see *The conditional construction* below).
 
 ### Open
 
-**No exponent is claimed for the vascular lattice.** Its `alpha(x_min)` profile
-does not plateau at any control setting tested (panel C), and where there is
-enough data the nested likelihood-ratio test rejects a pure power law. The
-diagnosis is visible in the numbers: at the most permissive setting the largest
-avalanche reaches 90% of the perfused network, so the distribution is truncated
-by the box, not by the dynamics. **Finite-size scaling across several lattice
-sizes is the prerequisite for any exponent claim here, and it has not been
-done.** Until it is, the honest output is a profile, not a number.
+**Boundary conditions.** Everything above is at a fixed pressure drop, and that
+choice may be doing the work. Under fixed *total flow* — the autoregulated
+case — blocking would force the same flow through fewer channels, which could
+be self-amplifying rather than self-limiting. This is the one direction that
+could plausibly recover criticality, and it is the first question a reader will
+ask. Not implemented.
 
 **The lattice geometry is a placeholder.** A periodic lattice with lognormal
 radii is not claimed to resemble any real microvascular bed.
+
+**Kernel-shape sensitivity.** `kernel.LogisticKernel` exists to re-run the
+conclusions under a different kernel at matched slope. Not yet done.
 
 **No clinical data is connected.** See `data/README.md`; the access question is
 recorded there as unresolved rather than assumed.
 
 ---
 
-## Two findings that constrain how results may be read
+## Two findings that constrain how any result here may be read
 
 ### A large kinetic exponent flattens the kernel, it does not sharpen it
 
@@ -96,22 +150,7 @@ This rules out a tempting research design — reading a single fitted exponent a
 a signature that discriminates between mechanisms (say, long-range against
 local redistribution). Without the window and the fitting range pinned down, and
 without a demonstrated plateau, such a comparison is underdetermined. Hence
-`scaling.exponent_profile`, which returns the whole `alpha(x_min)` curve, and
-the validation figure, whose first panel is nothing but the contrast between a
-profile that plateaus and one that does not.
-
-### The mean-field branching relation fails where it would be wanted
-
-Two independent estimators of the branching ratio — mean first-generation
-offspring, and `1 - 1/<S>` inverted from the mean total progeny — agree deep in
-the subcritical regime and **diverge by tens of percent approaching `R = 1`**
-(panel D, pinned in `tests/test_cascade.py`). Global pressure redistribution
-correlates offspring across generations, so the cascade is not a tree.
-
-Practical consequence: a branching ratio must not be inferred from a mean
-avalanche size in the near-critical regime, which is the only regime of
-interest. Any inference scheme resting on mean-field branching relations needs
-rebuilding on measured quantities.
+`scaling.exponent_profile`, which returns the whole `alpha(x_min)` curve.
 
 ---
 
@@ -157,6 +196,18 @@ are self-limiting; `"exhausted"` ones ate the network and their size measures
 manufactures a cutoff at the system size — `Avalanche.censored` exists to make
 that impossible to do by accident.
 
+### Measuring the branching ratio
+
+`expected_branching_ratio` computes it in closed form: given the seed, the
+offspring count is a sum of independent Bernoulli trials, so its expectation is
+a sum of conditional blocking probabilities — one pressure solve per seed, no
+sampling noise. `critical_shift` and `shift_for_ratio` bisect it.
+
+Both hold the seed subsample **fixed** across evaluations. Re-drawing it leaves
+each call unbiased but makes every bisection step probe a slightly different
+function; the first version of this did re-draw, and the bracket collapsed onto
+a shift wrong by up to 0.4. Pinned as a test.
+
 ---
 
 ## Install and run
@@ -164,14 +215,18 @@ that impossible to do by accident.
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
-.venv/bin/python -m pytest              # ~2 min, includes the analytic checks
-.venv/bin/python examples/validation.py # ~2 min -> figures/validation.{png,pdf} + CSVs
-.venv/bin/python examples/validation.py --quick   # ~15 s
+.venv/bin/python -m pytest                   # ~3 min, includes the analytic checks
+.venv/bin/python examples/validation.py      # ~2 min   estimator validation
+.venv/bin/python examples/generations.py     # ~3 min   why R=1 is not critical
+.venv/bin/python examples/finite_size.py     # ~37 min  is there a critical point?
+.venv/bin/python examples/finite_size.py --replot   # ~1 s, redraw from the CSV
 ```
 
-`figures/` is generated and git-ignored; every panel is reproducible from the
-script, and each one also writes the CSV behind it so the numbers can be read
-without the picture.
+Every script takes `--quick` for a coarse version in well under a minute.
+`figures/` is generated and git-ignored; each script also writes the CSV behind
+every panel, so the numbers can be read without the picture — and
+`finite_size.py --replot` restyles the figure from that CSV rather than
+re-running the simulation.
 
 ## Layout
 

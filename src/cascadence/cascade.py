@@ -401,9 +401,12 @@ def generation_profile(ensemble: list[Avalanche]) -> dict[str, np.ndarray]:
     * Reaching ``R_k = 1`` for ``k >= 2`` would need ``R_1`` around 2, and by
       then avalanches span the system outright.
 
-    Returns a dict with keys ``generation`` (the index ``k``), ``ratio``
-    (``R_k``) and ``total`` (segments blocked in generation ``k``). Ratios are
-    reported only while the denominator is large enough to mean anything.
+    Returns a dict whose three arrays are aligned and equal in length:
+    ``generation`` (the index ``k``, starting at 1), ``ratio`` (``R_k``) and
+    ``total`` (segments blocked in generation ``k``, the numerator of ``R_k``).
+    Ratios are reported only while the denominator is large enough to mean
+    anything, so the profile ends where the statistics run out rather than
+    trailing off into noise.
     """
     if not ensemble:
         raise ValueError("empty ensemble")
@@ -418,11 +421,10 @@ def generation_profile(ensemble: list[Avalanche]) -> dict[str, np.ndarray]:
     last = int(np.argmin(usable)) if not usable.all() else depth
     last = max(last, 1)
 
-    ratios = totals[1:last] / totals[: last - 1]
     return {
         "generation": np.arange(1, last, dtype=np.int64),
-        "ratio": ratios,
-        "total": totals[:last],
+        "ratio": totals[1:last] / totals[: last - 1],
+        "total": totals[1:last],
     }
 
 
