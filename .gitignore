@@ -216,3 +216,36 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- project-specific ----
+# Clinical data: never committed. Redistribution is restricted by data-use
+# agreements, and a stray commit cannot be fully undone from git history.
+data/raw/
+data/interim/
+*.sas7bdat
+*.xpt
+
+# Simulation output and generated figures (regenerate with examples/).
+results/
+outputs/
+figures/
+*.npz
+*.h5
+*.hdf5
+*.parquet
+
+# SBI / torch checkpoints
+*.pt
+*.ckpt
+
+# LaTeX
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+
+# OS
+.DS_Store

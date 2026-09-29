@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cascadence"
+version = "0.1.0.dev0"
+description = "Critical cascades on flow networks with load redistribution"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: validation runs with large ensembles",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]

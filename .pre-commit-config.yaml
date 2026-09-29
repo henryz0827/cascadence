@@ -1,0 +1,25 @@
+# Install once with:  pre-commit install
+#
+# The large-file check is the real safeguard here, not a style nicety: clinical
+# extracts run to tens or hundreds of megabytes, and .gitignore alone does not
+# stop `git add -f` or a mistyped path. This catches those before they enter
+# history, where they cannot be cleanly removed.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format

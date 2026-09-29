@@ -1,0 +1,355 @@
+"""Avalanche dynamics on a flow network, and measurement of the branching ratio.
+
+One avalanche: block a seed segment, re-solve the pressure field, let the
+segments whose transit time grew block with the probability the kernel assigns
+them, and iterate until nothing more blocks.
+
+Why the blocking probability is *conditional*
+---------------------------------------------
+The kernel assigns every perfused segment a standing blocking probability
+``p_base = p_block(T_base)`` in the undisturbed network, and that number is not
+small. Sampling it directly on every round would occlude the whole network
+immediately, with or without any redistribution -- the "quiescent" state would
+not be quiescent, and no branching ratio would be measurable.
+
+What an avalanche actually is, is the network's *response to redistribution*: a
+segment blocks now because losing a neighbour lengthened its transit time,
+given that it survived at its baseline hazard. That is the conditional
+probability
+
+    p_cond = (p_block(T_now) - p_block(T_base)) / (1 - p_block(T_base))
+
+which is zero whenever the transit time has not changed, so the undisturbed
+network is genuinely quiescent and every block in an avalanche is attributable
+to redistribution. The slow baseline occlusion this construction factors out is
+the *driving*, and it belongs to a separate, slower process; it is not part of
+the avalanche.
+
+Two sizes are recorded, and they differ
+---------------------------------------
+``size``
+    Segments actively occluded.
+``deperfused``
+    Segments that lost perfusion, whether by occluding themselves or by being
+    stranded behind something that did. This is the larger number, and it is
+    the one with a physical referent -- a stranded subtree is just as
+    unperfused as an occluded segment. Use ``deperfused`` as the avalanche size
+    unless there is a specific reason not to.
+
+The branching ratio is always measured, never assumed, with two independent
+estimators (mean first-generation offspring, and ``R = 1 - 1/<S>`` from the
+mean total progeny of a subcritical branching process). They agree only to the
+extent the mean-field branching picture applies; a disagreement is a result
+about the network, not a bug.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .kernel import BlockingKernel
+from .network import FlowNetwork, FlowState
+
+__all__ = [
+    "Avalanche",
+    "BranchingRatio",
+    "avalanche_ensemble",
+    "branching_ratio",
+    "run_avalanche",
+    "sweep_control",
+]
+
+
+@dataclass(frozen=True)
+class Avalanche:
+    """Outcome of a single avalanche.
+
+    ``terminated`` records *why* the cascade stopped, and it decides whether the
+    recorded size is usable:
+
+    ``"quiescent"``
+        A round produced no new blocks. The avalanche ended on its own, so its
+        size is a genuine sample from the size distribution.
+    ``"exhausted"``
+        No perfused, unblocked segment was left to block. The avalanche ate the
+        network, so its size is censored at the system size and says more about
+        ``n_edges`` than about the dynamics.
+    ``"max_rounds"``
+        Hit the generation cap while still spreading.
+
+    Only ``"quiescent"`` avalanches may be fed to :mod:`cascadence.scaling`.
+    Mixing the other two into a size distribution manufactures a spurious
+    cutoff at the system size and biases any fitted exponent.
+    """
+
+    seed_edge: int
+    size: int
+    deperfused: int
+    generations: tuple[int, ...]
+    terminated: str
+    throughput_loss: float
+
+    @property
+    def censored(self) -> bool:
+        """Whether the size is limited by the system rather than the dynamics."""
+        return self.terminated != "quiescent"
+
+    @property
+    def rounds(self) -> int:
+        return len(self.generations)
+
+    @property
+    def offspring(self) -> int:
+        """Segments blocked in the first generation, i.e. the seed's offspring."""
+        return self.generations[1] if len(self.generations) > 1 else 0
+
+
+def run_avalanche(
+    network: FlowNetwork,
+    kernel: BlockingKernel,
+    rng: np.random.Generator,
+    *,
+    seed_edge: int | None = None,
+    baseline: FlowState | None = None,
+    baseline_p: np.ndarray | None = None,
+    max_rounds: int = 200,
+) -> Avalanche:
+    """Run one avalanche from a single seeded block.
+
+    Parameters
+    ----------
+    seed_edge
+        Which edge to occlude first. Defaults to a uniformly random perfused
+        edge. Seeding non-uniformly (say, on the most vulnerable segment)
+        changes the measured branching ratio, so the choice is part of the
+        protocol and must be reported.
+    baseline, baseline_p
+        Pre-computed undisturbed state and its blocking probabilities. Pass
+        these when running many avalanches on the same network -- they are what
+        the conditional probability is referenced to and recomputing them per
+        realisation is both wasteful and a source of inconsistency.
+    max_rounds
+        Cap on cascade generations. Hitting it sets ``runaway``, which means the
+        configuration is supercritical and the avalanche has no finite size; do
+        not fold such realisations into a size distribution.
+    """
+    if baseline is None:
+        baseline = network.solve()
+    if baseline_p is None:
+        baseline_p = kernel.p_block(baseline.transit_time)
+
+    baseline_throughput = network.total_flow(baseline)
+    perfused_edges = np.flatnonzero(baseline.perfused)
+    if perfused_edges.size == 0:
+        raise ValueError("baseline network has no perfused edges")
+
+    if seed_edge is None:
+        seed_edge = int(rng.choice(perfused_edges))
+    elif not baseline.perfused[seed_edge]:
+        raise ValueError(f"seed edge {seed_edge} is not perfused at baseline")
+
+    blocked = np.zeros(network.n_edges, dtype=bool)
+    blocked[seed_edge] = True
+    generations = [1]
+    terminated = "max_rounds"
+
+    for _ in range(max_rounds):
+        state = network.solve(blocked)
+        candidates = state.perfused & ~blocked
+        if not candidates.any():
+            # Nothing left that could block: the avalanche consumed the network
+            # and its size is censored at the system size, not self-limiting.
+            terminated = "exhausted"
+            break
+
+        p_now = kernel.p_block(state.transit_time[candidates])
+        p_was = baseline_p[candidates]
+        # Probability of blocking now given survival at the baseline hazard.
+        p_cond = np.clip(
+            (p_now - p_was) / np.clip(1.0 - p_was, 1e-12, None), 0.0, 1.0
+        )
+        newly = rng.random(p_cond.size) < p_cond
+        if not newly.any():
+            terminated = "quiescent"
+            break
+
+        blocked[np.flatnonzero(candidates)[newly]] = True
+        generations.append(int(np.count_nonzero(newly)))
+
+    final = network.solve(blocked)
+    deperfused = int(np.count_nonzero(baseline.perfused & ~final.perfused))
+    final_throughput = network.total_flow(final)
+    loss = (
+        1.0 - final_throughput / baseline_throughput
+        if baseline_throughput > 0.0
+        else 0.0
+    )
+
+    return Avalanche(
+        seed_edge=int(seed_edge),
+        size=int(np.count_nonzero(blocked)),
+        deperfused=deperfused,
+        generations=tuple(generations),
+        terminated=terminated,
+        throughput_loss=float(loss),
+    )
+
+
+def avalanche_ensemble(
+    network: FlowNetwork,
+    kernel: BlockingKernel,
+    rng: np.random.Generator,
+    *,
+    n_realizations: int = 500,
+    max_rounds: int = 200,
+) -> list[Avalanche]:
+    """Run many independent avalanches against one shared baseline."""
+    baseline = network.solve()
+    baseline_p = kernel.p_block(baseline.transit_time)
+    return [
+        run_avalanche(
+            network,
+            kernel,
+            rng,
+            baseline=baseline,
+            baseline_p=baseline_p,
+            max_rounds=max_rounds,
+        )
+        for _ in range(n_realizations)
+    ]
+
+
+@dataclass(frozen=True)
+class BranchingRatio:
+    """Two independent estimates of the branching ratio, plus diagnostics."""
+
+    from_offspring: float
+    from_mean_size: float
+    offspring_sem: float
+    mean_size: float
+    mean_deperfused: float
+    censored_fraction: float
+    n_realizations: int
+
+    @property
+    def subcritical(self) -> bool:
+        """Whether the configuration produced finite, uncensored avalanches.
+
+        With any censored realisation the mean total progeny is truncated by the
+        system size, so ``from_mean_size`` is biased toward 1 from below and
+        cannot be read as a branching ratio at all.
+        """
+        return self.censored_fraction == 0.0 and self.from_offspring < 1.0
+
+    @property
+    def consistent(self) -> bool:
+        """Whether the estimators agree within two standard errors of the first.
+
+        Disagreement means the mean-field branching approximation does not hold
+        on this network -- typically because redistribution is correlated across
+        generations rather than tree-like. That is a finding to report, not an
+        error to suppress.
+        """
+        if self.censored_fraction > 0.0:
+            return False
+        tol = max(2.0 * self.offspring_sem, 0.02)
+        return abs(self.from_offspring - self.from_mean_size) <= tol
+
+
+def branching_ratio(
+    network: FlowNetwork,
+    kernel: BlockingKernel,
+    rng: np.random.Generator,
+    *,
+    n_realizations: int = 500,
+    max_rounds: int = 200,
+) -> BranchingRatio:
+    """Measure the branching ratio two independent ways.
+
+    ``from_offspring``
+        Mean number of segments blocked in the first generation. This is the
+        branching ratio by definition, and needs no assumption about the
+        cascade's shape.
+    ``from_mean_size``
+        ``1 - 1/<S>``, inverting the mean total progeny of a subcritical
+        Galton-Watson process. Valid only if the cascade really is branching,
+        which is precisely what comparing it against the first estimator tests.
+
+    Both are meaningless if any realisation was censored by the system size;
+    ``censored_fraction`` reports that, and neither
+    :attr:`BranchingRatio.consistent` nor :attr:`BranchingRatio.subcritical`
+    will certify such a sweep point.
+    """
+    ensemble = avalanche_ensemble(
+        network, kernel, rng, n_realizations=n_realizations, max_rounds=max_rounds
+    )
+    offspring = np.array([av.offspring for av in ensemble], dtype=float)
+    sizes = np.array([av.size for av in ensemble], dtype=float)
+    deperfused = np.array([av.deperfused for av in ensemble], dtype=float)
+    censored = np.array([av.censored for av in ensemble], dtype=bool)
+
+    mean_size = float(sizes.mean())
+    return BranchingRatio(
+        from_offspring=float(offspring.mean()),
+        from_mean_size=float(1.0 - 1.0 / mean_size) if mean_size > 0.0 else np.nan,
+        offspring_sem=float(offspring.std(ddof=1) / np.sqrt(offspring.size)),
+        mean_size=mean_size,
+        mean_deperfused=float(deperfused.mean()),
+        censored_fraction=float(censored.mean()),
+        n_realizations=len(ensemble),
+    )
+
+
+def sweep_control(
+    network: FlowNetwork,
+    kernel,
+    shifts: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    n_realizations: int = 300,
+    max_rounds: int = 200,
+) -> dict[str, np.ndarray]:
+    """Measure the branching ratio across a control-parameter sweep.
+
+    ``kernel`` must expose ``shifted(delta)`` (see
+    :class:`cascadence.kernel.RaceKernel`). Each ``shift`` translates the median
+    log delay time, so the sweep traces out where ``R`` crosses 1 -- the
+    quantity the whole model hinges on, and one that has to be located
+    numerically rather than assumed.
+
+    Returns arrays keyed ``shift``, ``r_offspring``, ``r_mean_size``,
+    ``mean_size``, ``mean_deperfused``, ``censored_fraction``.
+    """
+    if not hasattr(kernel, "shifted"):
+        raise TypeError("kernel must implement .shifted(delta) to be swept")
+
+    rows = []
+    for shift in np.asarray(shifts, dtype=float):
+        measured = branching_ratio(
+            network,
+            kernel.shifted(float(shift)),
+            rng,
+            n_realizations=n_realizations,
+            max_rounds=max_rounds,
+        )
+        rows.append(
+            (
+                shift,
+                measured.from_offspring,
+                measured.from_mean_size,
+                measured.mean_size,
+                measured.mean_deperfused,
+                measured.censored_fraction,
+            )
+        )
+    arr = np.asarray(rows, dtype=float)
+    return {
+        "shift": arr[:, 0],
+        "r_offspring": arr[:, 1],
+        "r_mean_size": arr[:, 2],
+        "mean_size": arr[:, 3],
+        "mean_deperfused": arr[:, 4],
+        "censored_fraction": arr[:, 5],
+    }
