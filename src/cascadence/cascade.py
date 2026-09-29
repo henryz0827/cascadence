@@ -61,6 +61,7 @@ __all__ = [
     "expected_branching_ratio",
     "generation_profile",
     "run_avalanche",
+    "seeding_rate",
     "shift_for_ratio",
     "sweep_control",
 ]
@@ -375,6 +376,43 @@ def expected_branching_ratio(
             np.clip((p_now - p_was) / np.clip(1.0 - p_was, 1e-12, None), 0.0, 1.0).sum()
         )
     return total / len(seeds)
+
+
+def seeding_rate(
+    network: FlowNetwork,
+    kernel: BlockingKernel,
+    *,
+    baseline: FlowState | None = None,
+) -> float:
+    """Rate at which the undisturbed network throws off first occlusions.
+
+    The avalanche dynamics describe what happens *after* a segment occludes.
+    This is the other half: how often that happens at all, in the quiescent
+    network, which sets the event rate the size distribution is conditioned on.
+
+    Cells arrive in segment ``e`` at a rate proportional to its volumetric flow
+    ``q_e``, and each occludes during its transit with probability
+    ``p_block(T_e)``. So occlusions appear at a rate
+
+        lambda = sum over perfused segments of  p_block(T_e) * q_e
+
+    up to the constant cell volume, which is why the return value is a rate
+    *up to scale*: only ratios of it across control settings are meaningful,
+    and those are what the coupling prediction uses.
+
+    The point of computing it is that the same control parameter sets both this
+    rate and the avalanche size scale. Eliminating the parameter between them
+    leaves a relation between event frequency and event size with nothing free
+    in it -- a prediction that does not require the system to be critical,
+    which matters here because :mod:`cascadence` has established that it is not.
+    """
+    if baseline is None:
+        baseline = network.solve()
+    perfused = baseline.perfused
+    if not perfused.any():
+        return 0.0
+    probability = kernel.p_block(baseline.transit_time[perfused])
+    return float(np.sum(probability * np.abs(baseline.flow[perfused])))
 
 
 def generation_profile(ensemble: list[Avalanche]) -> dict[str, np.ndarray]:
