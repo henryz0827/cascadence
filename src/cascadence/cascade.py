@@ -59,6 +59,7 @@ __all__ = [
     "branching_ratio",
     "critical_shift",
     "expected_branching_ratio",
+    "generation_profile",
     "run_avalanche",
     "shift_for_ratio",
     "sweep_control",
@@ -374,6 +375,55 @@ def expected_branching_ratio(
             np.clip((p_now - p_was) / np.clip(1.0 - p_was, 1e-12, None), 0.0, 1.0).sum()
         )
     return total / len(seeds)
+
+
+def generation_profile(ensemble: list[Avalanche]) -> dict[str, np.ndarray]:
+    """Branching ratio resolved generation by generation.
+
+    ``R_k`` is the total number of segments blocked in generation ``k+1``
+    divided by the total blocked in generation ``k``, pooled over the ensemble.
+
+    This is the diagnostic that explains why tuning the branching ratio to 1
+    does not make this system critical. On a flow network with global
+    redistribution the ratio is **not a single number**: measured at the
+    setting where ``R_1 = 1``, the second generation branches at roughly half
+    that rate and the ratio then plateaus well below 1. Successive generations
+    re-attack a neighbourhood the previous one already depleted of its
+    susceptible segments, so the cascade is not a tree and no single rate
+    describes it.
+
+    Three observations follow, and they are consistent with each other:
+
+    * ``R_1 = 1`` is not a critical condition, so avalanches stay small there.
+    * ``<S> = 1/(1-R)`` is invalid, since it assumes one rate for all
+      generations -- which is why the two estimators in
+      :func:`branching_ratio` disagree near criticality.
+    * Reaching ``R_k = 1`` for ``k >= 2`` would need ``R_1`` around 2, and by
+      then avalanches span the system outright.
+
+    Returns a dict with keys ``generation`` (the index ``k``), ``ratio``
+    (``R_k``) and ``total`` (segments blocked in generation ``k``). Ratios are
+    reported only while the denominator is large enough to mean anything.
+    """
+    if not ensemble:
+        raise ValueError("empty ensemble")
+
+    depth = max(len(av.generations) for av in ensemble)
+    totals = np.zeros(depth, dtype=float)
+    for avalanche in ensemble:
+        for index, count in enumerate(avalanche.generations):
+            totals[index] += count
+
+    usable = totals >= 20.0
+    last = int(np.argmin(usable)) if not usable.all() else depth
+    last = max(last, 1)
+
+    ratios = totals[1:last] / totals[: last - 1]
+    return {
+        "generation": np.arange(1, last, dtype=np.int64),
+        "ratio": ratios,
+        "total": totals[:last],
+    }
 
 
 def shift_for_ratio(

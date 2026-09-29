@@ -12,6 +12,7 @@ from cascadence.cascade import (
     branching_ratio,
     critical_shift,
     expected_branching_ratio,
+    generation_profile,
     run_avalanche,
     shift_for_ratio,
 )
@@ -267,6 +268,37 @@ def test_bisection_rejects_a_bracket_that_does_not_straddle():
         critical_shift(net, kernel, bracket=(12.0, 20.0))
     with pytest.raises(ValueError, match="target branching ratio must be positive"):
         shift_for_ratio(net, kernel, 0.0)
+
+
+def test_branching_ratio_collapses_after_the_first_generation():
+    """The structural reason R = 1 is not a critical condition here.
+
+    Measured at the setting where the first-generation ratio is 1, the second
+    generation branches at roughly half that rate and the ratio then plateaus
+    well below 1: successive generations re-attack a neighbourhood the previous
+    one already stripped of its susceptible segments, so no single rate
+    describes the cascade. Pinned as a test because three other results depend
+    on it -- the small avalanches at R = 1, the failure of <S> = 1/(1-R), and
+    the absence of any scale-free regime.
+    """
+    net = _bed(shape=(20, 20))
+    kernel = _centred_kernel(net)
+    shift = critical_shift(net, kernel, n_seeds=400, rng=np.random.default_rng(7))
+    ensemble = avalanche_ensemble(
+        net, kernel.shifted(shift), np.random.default_rng(5), n_realizations=1500
+    )
+    profile = generation_profile(ensemble)
+
+    assert profile["ratio"].size >= 4
+    first = profile["ratio"][0]
+    assert first == pytest.approx(1.0, abs=0.12), profile["ratio"]
+    # The drop after the first generation is the finding, not noise.
+    assert profile["ratio"][1] < 0.8 * first, profile["ratio"]
+    # ...and what follows stays below 1 rather than recovering.
+    assert profile["ratio"][1:5].max() < 0.85, profile["ratio"]
+
+    with pytest.raises(ValueError, match="empty ensemble"):
+        generation_profile([])
 
 
 def test_seeds_must_be_perfused():
