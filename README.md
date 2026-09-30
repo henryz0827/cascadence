@@ -231,15 +231,90 @@ re-running the simulation.
 ## Layout
 
 ```
-src/cascadence/
+src/cascadence/     # the model
 ├── network.py      # conductance networks, edge removal, transit times
 ├── kernel.py       # blocking kernels; the only place kinetics enters
 ├── cascade.py      # avalanche dynamics, branching-ratio measurement
 ├── scaling.py      # discrete power-law MLE, cutoff tests, exponent profiles
 └── fiberbundle.py  # ELS fiber bundle: the analytic validation fixture
+
+src/voc/            # the clinical data pipeline — a sibling, not a submodule
+├── codes.py        # ICD sets for sickle cell disease; trait excluded, audited
+├── episodes.py     # the 3-day collapsing rule, and gap times
+├── cohort.py       # crisis-encounter assembly and the go/no-go count
+└── sql/            # extraction queries for MIMIC-IV
 ```
 
 Read `fiberbundle.py` before trusting any exponent this library reports.
+
+---
+
+## The clinical side
+
+`voc` exists because the modelling had outrun the data: three negative results
+in a row, none of which settle anything, because no empirical fact was
+constraining the model. What the distribution of inter-crisis intervals
+actually looks like, whether crises cluster, and whether frequency tracks
+severity are empirical questions nobody here has answered yet — and they decide
+whether a cascade model is needed at all.
+
+### The rule that is not optional
+
+Around **17% of vaso-occlusive crisis ED encounters are followed by a revisit
+within 3 days** (Walsh et al., *Am J Hematol* 2023; 40 US emergency
+departments, 13,847 index encounters), and a revisit that fast is usually the
+same under-treated crisis. Vaso-occlusion trials count a new crisis only when
+it starts at least 3 days after the previous resolved.
+
+Skipping that does not add noise, it manufactures signal. On the synthetic
+fixture, uncollapsed encounters give a median interval of 17 days with 50% of
+intervals under a week; collapsed at 3 days, the median is 60 days and none are
+under a week. The same shift on real data would read as temporal clustering.
+`examples/voc_feasibility.py` prints that sensitivity table every run.
+
+### Which dataset, and why not the obvious one
+
+**MIMIC-III is ICU-only** and therefore wrong: most crises never reach an ICU,
+so it samples a selected tail.
+
+**MIMIC-IV is hospital-wide but still unlikely to carry the interval
+analysis.** Its source hospital is not a sickle cell centre; adult sickle cell
+care in Boston concentrates elsewhere, and the statewide population is a few
+thousand. On top of that it admits patients only via an ED or ICU touch,
+excludes under-18s at first visit, and has no day-hospital encounter type —
+which is where milder crises are treated. The per-patient event series is
+non-randomly incomplete.
+
+No published count exists for how many MIMIC-IV patients have three or more
+crisis episodes, so `voc.cohort.feasibility` settles it by counting, against a
+threshold written down first.
+
+The intended split, which is why `voc.episodes` accepts both timestamps and
+integer day offsets:
+
+| what | from | why |
+|---|---|---|
+| intervals, clustering | HCUP SID + SEDD | follows a patient across facilities *and* care settings within a state, over years, at day resolution |
+| severity proxies | MIMIC-IV | labs, administered opioid doses, transfusion, oxygen — no claims source has these |
+| a cheap pilot on frequency vs severity | HCUP NRD | large and inexpensive, but its patient linkage resets every calendar year, so it cannot give interval distributions |
+
+None of this is settled: the dataset numbers above come from secondary sources
+and want verifying at the primary documentation before anything is purchased.
+
+### Running it
+
+```bash
+.venv/bin/python examples/voc_feasibility.py --demo    # synthetic, no access needed
+.venv/bin/python examples/voc_feasibility.py --encounters crisis_encounters.csv
+```
+
+Once credentialed: run `src/voc/sql/01_audit_codes.sql` and reconcile anything
+it lists that `voc.codes.classify` calls `unknown`; **write the threshold down**;
+then run `02_crisis_encounters.sql` and point the script at the export.
+
+The pipeline is tested against synthetic MIMIC-shaped fixtures with declared
+ground truth (`tests/voc_fixture.py`), so it is checkable before access exists
+and stays checkable afterwards without committing data that cannot be committed.
 
 ## License
 
