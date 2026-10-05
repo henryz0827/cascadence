@@ -242,6 +242,7 @@ src/voc/            # the clinical data pipeline — a sibling, not a submodule
 ├── codes.py        # ICD sets for sickle cell disease; trait excluded, audited
 ├── episodes.py     # the 3-day collapsing rule, and gap times
 ├── cohort.py       # crisis-encounter assembly and the go/no-go count
+├── summaries.py    # whether published numbers alone can settle it (they cannot)
 └── sql/            # extraction queries for MIMIC-IV
 ```
 
@@ -271,6 +272,48 @@ fixture, uncollapsed encounters give a median interval of 17 days with 50% of
 intervals under a week; collapsed at 3 days, the median is 60 days and none are
 under a week. The same shift on real data would read as temporal clustering.
 `examples/voc_feasibility.py` prints that sensitivity table every run.
+
+### The free route was tried first, and it fails for a specific reason
+
+Before buying anything, the cheapest possible study: fit the mechanism to
+summary statistics already in the literature. `examples/voc_summary_fit.py`
+runs it end to end.
+
+Fitting heterogeneity to the published annual count summaries and then
+*predicting* the short-interval rates gives:
+
+| window | predicted by heterogeneity | published | ratio |
+|---:|---:|---:|---:|
+| 3 d | 10.4% | 17.0% | 1.64 |
+| 7 d | 21.4% | 24.0% | 1.12 |
+| 14 d | 35.5% | 31.0% | 0.87 |
+| 30 d | 54.7% | 26.9% | 0.49 |
+
+The ratio **crosses 1**. Self-excitation added to a heterogeneity null can only
+push observed rates above predicted, at every horizon — it cannot produce a
+ratio that falls through 1 as the window widens. And an over-identification
+check the fit never saw misses by about a factor of two in both directions
+(11.1% vs 5% of patients above three episodes a year; 83.4% vs 33% of episodes
+from them).
+
+The decisive check needs no model at all. Writing `N` for a patient's annual
+episode count, any distribution whatsoever obeys
+`P(1≤N≤3) ≤ (1−f)·E[N] ≤ 3·P(1≤N≤3)`. The published figures require patients
+with 1–3 episodes to supply 0.953 episodes while being only 20.5% of patients —
+at most 0.615. **No distribution of `N` satisfies them.**
+
+So the obstacle is not statistical power, which more published numbers would
+fix. Each figure arrives with its own cohort and its own event definition — one
+counts raw ED revisits with no episode collapsing, another counts only
+inpatient-to-inpatient readmissions — and the disagreements between them are as
+large as the effect being tested. What individual data buys is exactly what is
+missing: **one cohort, one event definition, counts and intervals on the same
+patients.**
+
+That does not require multi-year follow-up. The comparison above needs a count
+distribution and a short-interval distribution from one source; a single year of
+inpatient data supports it. The full interval distribution can wait until it is
+shown to be the thing worth paying more for.
 
 ### Which dataset, and why not the obvious one
 
